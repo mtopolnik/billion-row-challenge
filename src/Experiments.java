@@ -44,7 +44,7 @@ public class Experiments {
         static final long COUNT_OFFSET = SUM_OFFSET + Long.BYTES;
         static final long MIN_OFFSET = COUNT_OFFSET + Integer.BYTES;
         static final long MAX_OFFSET = MIN_OFFSET + Integer.BYTES;
-        static final long SIZEOF = MAX_OFFSET + Integer.BYTES;
+        static final long SIZEOF = (MAX_OFFSET + Integer.BYTES - 1) / 8 * 8 + 8;
 
         private final MemorySegment memSeg;
         private long base;
@@ -102,14 +102,8 @@ public class Experiments {
     }
 
     public static void main(String[] args) throws Exception {
-        System.out.println(ByteOrder.nativeOrder());
         var start = System.currentTimeMillis();
-        var memSeg = Arena.ofConfined().allocate(100);
-        memSeg.set(JAVA_BYTE, 0, (byte) '\n');
-        var posLE = bytePosLittleEndian(memSeg, 0, (byte) '\n');
-        var posBE = bytePosBigEndian(memSeg, 0, (byte) '\n');
-        System.out.println("Position LE: " + posLE);
-        System.out.println("Position BE: " + posBE);
+        calculate();
         System.out.printf("Took %,d ms%n", System.currentTimeMillis() - start);
     }
 
@@ -135,45 +129,51 @@ public class Experiments {
                 threads[i] = new Thread(() -> {
                     try {
                         long chunkSize = chunkLimit - chunkStart;
-                        var memSeg = raf.getChannel().map(MapMode.READ_ONLY, chunkStart, chunkSize, Arena.ofConfined());
-                        final var stats = new StatsAccessor(memSeg);
-                        var buf = Arena.ofConfined().allocate(16);
-                        var statsMem = Arena.ofConfined().allocate(TABLE_SIZE * StatsAccessor.SIZEOF);
-                        var offset = 0;
-                        var semicolonPos = bytePos(memSeg, offset, (byte) ';');
-                        long hash = hash(memSeg, offset, semicolonPos, buf);
-                        var newlinePos = bytePos(memSeg, semicolonPos + 1, (byte) '\n');
-                        var zeroChar = (byte) '0';
-                        int temperature = memSeg.get(JAVA_BYTE, newlinePos - 1) - zeroChar;
-                        temperature += memSeg.get(JAVA_BYTE, newlinePos - 3) - zeroChar;
-                        if (newlinePos - 4 > semicolonPos) {
-                            var b = memSeg.get(JAVA_BYTE, newlinePos - 4);
-                            if (b != (byte) '-') {
-                                temperature += b - zeroChar;
-                            } else {
-                                temperature = -temperature;
+                        final var inputMem = raf.getChannel().map(MapMode.READ_ONLY, chunkStart, chunkSize, Arena.ofConfined());
+                        final var buf = Arena.ofConfined().allocate(16);
+                        final var statsMem = Arena.ofConfined().allocate(TABLE_SIZE * StatsAccessor.SIZEOF, Long.BYTES);
+                        final var stats = new StatsAccessor(statsMem);
+                        long offset = 0;
+                        long numEntries = 0;
+                        while (offset < chunkSize) {
+                            final long semicolonPos = bytePos(inputMem, offset, (byte) ';');
+                            if (semicolonPos == -1) {
+                                break;
                             }
-                        }
-                        if (newlinePos - 5 > semicolonPos) {
-                            temperature = -temperature;
-                        }
-                        var tableIndex = hash % TABLE_SIZE;
-                        while (true) {
-                            stats.gotoIndex(tableIndex);
-                            if (stats.hash() == 0) {
-                                stats.hash(hash);
-                                stats.sum(temperature);
-                                stats.count(1);
-                                stats.min(temperature);
-                                stats.max(temperature);
-                            } else if (stats.hash() != hash) {
-                                tableIndex = (tableIndex + 1) % TABLE_SIZE;
-                                continue;
+                            final long hash = hash(inputMem, offset, semicolonPos, buf);
+                            final long newlinePos = bytePos(inputMem, semicolonPos + 1, (byte) '\n');
+                            if (newlinePos == -1) {
+                                throw new RuntimeException("No newline after a semicolon!");
                             }
-                            stats.sum(stats.sum() + temperature);
-                            stats.count(stats.count() + 1);
-                            stats.min(Integer.min(stats.min(), temperature));
-                            stats.max(Integer.max(stats.max(), temperature));
+                            int temperature = parseTemperature(inputMem, newlinePos, semicolonPos);
+                            long tableIndex = hash % TABLE_SIZE;
+                            var collisionCount = 0;
+                            while (true) {
+                                stats.gotoIndex(tableIndex);
+                                long foundHash = stats.hash();
+                                if (foundHash == 0) {
+                                    stats.hash(hash);
+                                    stats.sum(temperature);
+                                    stats.count(1);
+                                    stats.min(temperature);
+                                    stats.max(temperature);
+                                    numEntries++;
+                                    if (numEntries == TABLE_SIZE) {
+                                        throw new RuntimeException("Stats table is full!");
+                                    }
+                                    break;
+                                } else if (foundHash != hash) {
+                                    tableIndex = (tableIndex + 1) % TABLE_SIZE;
+                                    collisionCount++;
+                                    continue;
+                                }
+                                stats.sum(stats.sum() + temperature);
+                                stats.count(stats.count() + 1);
+                                stats.min(Integer.min(stats.min(), temperature));
+                                stats.max(Integer.max(stats.max(), temperature));
+                                break;
+                            }
+                            offset = newlinePos + 1;
                         }
                     } catch (RuntimeException e) {
                         throw e;
@@ -189,6 +189,41 @@ public class Experiments {
                 thread.join();
             }
         }
+    }
+
+    private static int parseTemperature(MemorySegment inputMem, long newlinePos, long semicolonPos) {
+        final byte zeroChar = (byte) '0';
+        int temperature = inputMem.get(JAVA_BYTE, newlinePos - 1) - zeroChar;
+        temperature += 10 * (inputMem.get(JAVA_BYTE, newlinePos - 3) - zeroChar);
+        if (newlinePos - 4 > semicolonPos) {
+            final byte b = inputMem.get(JAVA_BYTE, newlinePos - 4);
+            if (b != (byte) '-') {
+                temperature += 100 * (b - zeroChar);
+                if (newlinePos - 5 > semicolonPos) {
+                    temperature = -temperature;
+                }
+            } else {
+                temperature = -temperature;
+            }
+        }
+        return temperature;
+    }
+
+    private static long hash(MemorySegment inputMem, long offset, long limit, MemorySegment buf) {
+        buf.set(JAVA_LONG, 0, 0);
+        buf.set(JAVA_LONG, 8, 0);
+        buf.copyFrom(inputMem.asSlice(offset, Long.min(16, limit - offset)));
+        long n1 = buf.get(JAVA_LONG, 0);
+        long n2 = buf.get(JAVA_LONG, 8);
+        long seed = 0x51_7c_c1_b7_27_22_0a_95L;
+        int rotDist = 8;
+        long hash = n1;
+        hash *= seed;
+        hash = Long.rotateLeft(hash, rotDist);
+        hash ^= n2;
+        hash *= seed;
+        hash = Long.rotateLeft(hash, rotDist);
+        return hash != 0 ? hash & (~Long.MIN_VALUE) : 1;
     }
 
     static long bytePos(MemorySegment haystack, long start, byte needle) {
@@ -239,19 +274,14 @@ public class Experiments {
         return broadcast;
     }
 
-    private static long hash(MemorySegment memSeg, long offset, long limit, MemorySegment buf) {
-        buf.copyFrom(memSeg.asSlice(offset, limit - offset));
-        long n1 = buf.get(JAVA_LONG, 0);
-        long n2 = buf.get(JAVA_LONG, 8);
-        long seed = 0x51_7c_c1_b7_27_22_0a_95L;
-        int rotDist = 8;
-        long hash = n1;
-        hash *= seed;
-        hash = Long.rotateLeft(hash, rotDist);
-        hash ^= n2;
-        hash *= seed;
-        hash = Long.rotateLeft(hash, rotDist);
-        return hash != 0 ? hash : 1;
+    private static void testBytePos() {
+        System.out.println(ByteOrder.nativeOrder());
+        var memSeg = Arena.ofConfined().allocate(100);
+        memSeg.set(JAVA_BYTE, 0, (byte) '\n');
+        var posLE = bytePosLittleEndian(memSeg, 0, (byte) '\n');
+        var posBE = bytePosBigEndian(memSeg, 0, (byte) '\n');
+        System.out.println("Position LE: " + posLE);
+        System.out.println("Position BE: " + posBE);
     }
 
     private static long simpleSearch(MemorySegment haystack, byte needle, long offset) {
