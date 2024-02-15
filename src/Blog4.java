@@ -13,9 +13,6 @@ import java.util.Arrays;
 import java.util.Objects;
 import java.util.TreeMap;
 
-import static java.lang.foreign.ValueLayout.JAVA_BYTE;
-import static java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED;
-
 public class Blog4 {
     private static final Unsafe UNSAFE = unsafe();
 
@@ -97,63 +94,37 @@ public class Blog4 {
         }
 
         @Override public void run() {
-            processChunk();
-            results[myIndex] = Arrays.stream(hashtable)
-                                     .filter(Objects::nonNull)
-                                     .map(acc -> new StationStats(acc))
-                                     .toArray(StationStats[]::new);
-        }
-
-        private void processChunk() {
             long cursor = 0;
-            long lastNameWord;
             while (cursor < inputSize) {
                 long nameStartOffset = cursor;
                 long hash = 0;
-                int nameLen;
-                int temperature;
-                nameLen = 0;
+                int nameLen = 0;
                 while (true) {
-                    lastNameWord = getLong(nameStartOffset + nameLen);
-                    long matchBits = semicolonMatchBits(lastNameWord);
+                    long nameWord = UNSAFE.getLong(inputBase + nameStartOffset + nameLen);
+                    long matchBits = semicolonMatchBits(nameWord);
                     if (matchBits != 0) {
                         nameLen += nameLen(matchBits);
-                        lastNameWord = maskWord(lastNameWord, matchBits);
-                        hash = hash(hash, lastNameWord);
+                        nameWord = maskWord(nameWord, matchBits);
+                        hash = hash(hash, nameWord);
                         cursor += nameLen;
-                        long tempWord = getLong(cursor);
+                        long tempWord = UNSAFE.getLong(inputBase + cursor);
                         int dotPos = dotPos(tempWord);
-                        temperature = parseTemperature(tempWord, dotPos);
+                        int temperature = parseTemperature(tempWord, dotPos);
                         cursor += (dotPos >> 3) + 3;
+                        findAcc(hash, nameStartOffset, nameLen, nameWord).observe(temperature);
                         break;
                     }
-                    hash = hash(hash, lastNameWord);
+                    hash = hash(hash, nameWord);
                     nameLen += Long.BYTES;
                 }
-                ensureAcc(hash, nameStartOffset, nameLen, lastNameWord)
-                        .observe(temperature);
             }
+            results[myIndex] = Arrays.stream(hashtable)
+                                     .filter(Objects::nonNull)
+                                     .map(StationStats::new)
+                                     .toArray(StationStats[]::new);
         }
 
-        private StatsAcc findAcc0(long hash, long nameWord0) {
-            int slotPos = (int) hash & (HASHTABLE_SIZE - 1);
-            var acc = hashtable[slotPos];
-            if (acc != null && acc.hash == hash && acc.nameEquals0(nameWord0)) {
-                return acc;
-            }
-            return null;
-        }
-
-        private StatsAcc findAcc1(long hash, long nameWord0, long nameWord1) {
-            int slotPos = (int) hash & (HASHTABLE_SIZE - 1);
-            var acc = hashtable[slotPos];
-            if (acc != null && acc.hash == hash && acc.nameEquals1(nameWord0, nameWord1)) {
-                return acc;
-            }
-            return null;
-        }
-
-        private StatsAcc ensureAcc(long hash, long nameStartOffset, int nameLen, long lastNameWord) {
+        private StatsAcc findAcc(long hash, long nameStartOffset, int nameLen, long lastNameWord) {
             int initialPos = (int) hash & (HASHTABLE_SIZE - 1);
             int slotPos = initialPos;
             while (true) {
@@ -173,10 +144,6 @@ public class Blog4 {
                     throw new RuntimeException(String.format("hash %x, acc.hash %x", hash, acc.hash));
                 }
             }
-        }
-
-        private long getLong(long offset) {
-            return UNSAFE.getLong(inputBase + offset);
         }
 
         private static final long BROADCAST_SEMICOLON = 0x3B3B3B3B3B3B3B3BL;
@@ -200,15 +167,6 @@ public class Blog4 {
         // credit: merykitty
         private static int dotPos(long word) {
             return Long.numberOfTrailingZeros(~word & DOT_BITS);
-        }
-
-        // credit: merykitty
-        private static int parseTemperatureOG(long word, int dotPos) {
-            final long signed = (~word << 59) >> 63;
-            final long removeSignMask = ~(signed & 0xFF);
-            final long digits = ((word & removeSignMask) << (28 - dotPos)) & 0x0F000F0F00L;
-            final long absValue = ((digits * 0x640a0001) >>> 32) & 0x3FF;
-            return (int) ((absValue ^ signed) - signed);
         }
 
         // credit: merykitty and royvanrijn
@@ -255,14 +213,6 @@ public class Blog4 {
                 name[i] = getLong(inputBase, nameStartOffset + i * Long.BYTES);
             }
             name[name.length - 1] = lastNameWord;
-        }
-
-        boolean nameEquals0(long nameWord0) {
-            return name[0] == nameWord0;
-        }
-
-        boolean nameEquals1(long nameWord0, long nameWord1) {
-            return name[0] == nameWord0 && name[1] == nameWord1;
         }
 
         boolean nameEquals(long inputBase, long inputNameStart, long inputNameLen, long lastInputWord) {
@@ -327,10 +277,6 @@ public class Blog4 {
         public int compareTo(StationStats that) {
             return name.compareTo(that.name);
         }
-    }
-
-    static String stringAt(MemorySegment chunk, long start, long len) {
-        return new String(chunk.asSlice(start, len).toArray(JAVA_BYTE), StandardCharsets.UTF_8);
     }
 
     static String longToString(long word) {
