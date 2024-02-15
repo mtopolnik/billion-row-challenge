@@ -1,4 +1,5 @@
 import java.io.File;
+import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
@@ -14,6 +15,11 @@ import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 public class Blog2 {
     public static void main(String[] args) throws Exception {
         var clockStart = System.currentTimeMillis();
+        calculate();
+        System.err.format("Took %,d ms\n", System.currentTimeMillis() - clockStart);
+    }
+
+    private static void calculate() throws Exception {
         final File file = new File("measurements.txt");
         final long length = file.length();
         final int chunkCount = Runtime.getRuntime().availableProcessors();
@@ -56,7 +62,6 @@ public class Blog2 {
             }
         }
         System.out.println(totalsMap);
-        System.err.format("Took %,d ms\n", System.currentTimeMillis() - clockStart);
     }
 
     private static class ChunkProcessor implements Runnable {
