@@ -14,9 +14,8 @@ import java.util.Objects;
 import java.util.TreeMap;
 
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
-import static java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED;
 
-public class Blog4 {
+public class Blog5 {
     private static final Unsafe UNSAFE = unsafe();
 
     private static Unsafe unsafe() {
@@ -100,7 +99,7 @@ public class Blog4 {
             processChunk();
             results[myIndex] = Arrays.stream(hashtable)
                                      .filter(Objects::nonNull)
-                                     .map(acc -> new StationStats(acc))
+                                     .map(StationStats::new)
                                      .toArray(StationStats[]::new);
         }
 
@@ -109,28 +108,68 @@ public class Blog4 {
             long lastNameWord;
             while (cursor < inputSize) {
                 long nameStartOffset = cursor;
-                long hash = 0;
+                long nameWord0 = getLong(nameStartOffset);
+                long nameWord1 = 0;
+                long matchBits = semicolonMatchBits(nameWord0);
+                long hash;
                 int nameLen;
                 int temperature;
-                nameLen = 0;
-                while (true) {
-                    lastNameWord = getLong(nameStartOffset + nameLen);
-                    long matchBits = semicolonMatchBits(lastNameWord);
+                StatsAcc acc;
+                if (matchBits != 0) {
+                    nameLen = nameLen(matchBits);
+                    nameWord0 = maskWord(nameWord0, matchBits);
+                    cursor += nameLen;
+                    long tempWord = getLong(cursor);
+                    int dotPos = dotPos(tempWord);
+                    temperature = parseTemperature(tempWord, dotPos);
+                    cursor += (dotPos >> 3) + 3;
+                    hash = hash(nameWord0);
+                    acc = findAcc0(hash, nameWord0);
+                    if (acc != null) {
+                        acc.observe(temperature);
+                        continue;
+                    }
+                    lastNameWord = nameWord0;
+                }
+                else { // nameLen > 8
+                    hash = hash(nameWord0);
+                    nameWord1 = getLong(nameStartOffset + Long.BYTES);
+                    matchBits = semicolonMatchBits(nameWord1);
                     if (matchBits != 0) {
-                        nameLen += nameLen(matchBits);
-                        lastNameWord = maskWord(lastNameWord, matchBits);
-                        hash = hash(hash, lastNameWord);
+                        nameLen = Long.BYTES + nameLen(matchBits);
+                        nameWord1 = maskWord(nameWord1, matchBits);
                         cursor += nameLen;
                         long tempWord = getLong(cursor);
                         int dotPos = dotPos(tempWord);
                         temperature = parseTemperature(tempWord, dotPos);
                         cursor += (dotPos >> 3) + 3;
-                        break;
+                        acc = findAcc1(hash, nameWord0, nameWord1);
+                        if (acc != null) {
+                            acc.observe(temperature);
+                            continue;
+                        }
+                        lastNameWord = nameWord1;
                     }
-                    hash = hash(hash, lastNameWord);
-                    nameLen += Long.BYTES;
+                    else { // nameLen > 16
+                        nameLen = 2 * Long.BYTES;
+                        while (true) {
+                            lastNameWord = getLong(nameStartOffset + nameLen);
+                            matchBits = semicolonMatchBits(lastNameWord);
+                            if (matchBits != 0) {
+                                nameLen += nameLen(matchBits);
+                                lastNameWord = maskWord(lastNameWord, matchBits);
+                                cursor += nameLen;
+                                long tempWord = getLong(cursor);
+                                int dotPos = dotPos(tempWord);
+                                temperature = parseTemperature(tempWord, dotPos);
+                                cursor += (dotPos >> 3) + 3;
+                                break;
+                            }
+                            nameLen += Long.BYTES;
+                        }
+                    }
                 }
-                ensureAcc(hash, nameStartOffset, nameLen, lastNameWord)
+                ensureAcc(hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)
                         .observe(temperature);
             }
         }
@@ -153,18 +192,20 @@ public class Blog4 {
             return null;
         }
 
-        private StatsAcc ensureAcc(long hash, long nameStartOffset, int nameLen, long lastNameWord) {
+        private StatsAcc ensureAcc(long hash, long nameStartOffset, int nameLen,
+                                   long nameWord0, long nameWord1, long lastNameWord
+        ) {
             int initialPos = (int) hash & (HASHTABLE_SIZE - 1);
             int slotPos = initialPos;
             while (true) {
                 var acc = hashtable[slotPos];
                 if (acc == null) {
-                    acc = new StatsAcc(inputBase, hash, nameStartOffset, nameLen, lastNameWord);
+                    acc = new StatsAcc(inputBase, hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord);
                     hashtable[slotPos] = acc;
                     return acc;
                 }
                 if (acc.hash == hash) {
-                    if (acc.nameEquals(inputBase, nameStartOffset, nameLen, lastNameWord)) {
+                    if (acc.nameEquals(inputBase, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)) {
                         return acc;
                     }
                 }
@@ -233,8 +274,8 @@ public class Blog4 {
             return (Long.numberOfTrailingZeros(separator) >>> 3) + 1;
         }
 
-        private static long hash(long prevHash, long word) {
-            return Long.rotateLeft((prevHash ^ word) * 0x51_7c_c1_b7_27_22_0a_95L, 13);
+        private static long hash(long word) {
+            return Long.rotateLeft(word * 0x51_7c_c1_b7_27_22_0a_95L, 17);
         }
     }
 
@@ -247,14 +288,22 @@ public class Blog4 {
         int min;
         int max;
 
-        public StatsAcc(long inputBase, long hash, long nameStartOffset, int nameLen, long lastNameWord) {
+        public StatsAcc(long inputBase, long hash, long nameStartOffset, int nameLen,
+                        long nameWord0, long nameWord1, long lastNameWord
+        ) {
             this.hash = hash;
             this.nameLen = nameLen;
-            name = new long[(nameLen - 1) / 8 + 1];
-            for (int i = 0; i < name.length - 1; i++) {
+            int nameArrayLen = Math.max(2, (nameLen - 1) / 8 + 1);
+            name = new long[nameArrayLen];
+            name[0] = nameWord0;
+            name[1] = nameWord1;
+            int i = 2;
+            for (; i < name.length - 1; i++) {
                 name[i] = getLong(inputBase, nameStartOffset + i * Long.BYTES);
             }
-            name[name.length - 1] = lastNameWord;
+            if (i >= 2 && name.length > i) {
+                name[i] = lastNameWord;
+            }
         }
 
         boolean nameEquals0(long nameWord0) {
@@ -265,8 +314,13 @@ public class Blog4 {
             return name[0] == nameWord0 && name[1] == nameWord1;
         }
 
-        boolean nameEquals(long inputBase, long inputNameStart, long inputNameLen, long lastInputWord) {
-            int i = 0;
+        boolean nameEquals(long inputBase, long inputNameStart, long inputNameLen, long inputWord0, long inputWord1, long lastInputWord) {
+            boolean mismatch0 = inputWord0 != name[0];
+            boolean mismatch1 = inputWord1 != name[1];
+            if (inputNameLen <= 2 * Long.BYTES) {
+                return !(mismatch0 | mismatch1);
+            }
+            int i = 2 * Long.BYTES;
             for (; i <= inputNameLen - Long.BYTES; i += Long.BYTES) {
                 if (getLong(inputBase, inputNameStart + i) != name[i / 8]) {
                     return false;
