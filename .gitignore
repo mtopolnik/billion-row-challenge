@@ -3,6 +3,7 @@ data/
 lib
 *.iml
 measurements*
+profile.html
 
 ### IntelliJ IDEA ###
 out/
