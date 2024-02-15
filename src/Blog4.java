@@ -343,7 +343,7 @@ public class Blog4 {
                 buf.putLong(nameWord);
             }
             buf.flip();
-            final var bytes = new byte[nameLen];
+            final var bytes = new byte[nameLen - 1];
             buf.get(bytes);
             return new String(bytes, StandardCharsets.UTF_8);
         }
