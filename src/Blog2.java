@@ -118,7 +118,7 @@ public class Blog2 {
 
         @Override
         public String toString() {
-            return String.format("%s=%.1f/%.1f/%.1f", name, min / 10.0, Math.round((double) sum / count) / 10.0, max / 10.0);
+            return String.format("%.1f/%.1f/%.1f", min / 10.0, Math.round((double) sum / count) / 10.0, max / 10.0);
         }
 
         @Override
