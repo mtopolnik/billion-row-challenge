@@ -164,9 +164,36 @@ public class Blog4 {
         private static final long DOT_BITS = 0x10101000;
         private static final long MAGIC_MULTIPLIER = (100 * 0x1000000 + 10 * 0x10000 + 1);
 
+
         // credit: merykitty
+        // The 4th binary digit of the ascii of a digit is 1 while
+        // that of the '.' is 0. This finds the decimal separator.
+        // The value can be 12, 20, 28
         private static int dotPos(long word) {
             return Long.numberOfTrailingZeros(~word & DOT_BITS);
+        }
+
+        // credit: merykitty
+        // word contains the number: X.X, -X.X, XX.X or -XX.X
+        private static int parseTemperatureOG(long word, int dotPos) {
+            // signed is -1 if negative, 0 otherwise
+            final long signed = (~word << 59) >> 63;
+            final long removeSignMask = ~(signed & 0xFF);
+            // Zeroes out the sign character in the word
+            long wordWithoutSign = word & removeSignMask;
+            // Shifts so that the digits are at fixed positions:
+            // 0xUU00TTHH00 (UU: units digit, TT: tens digit, HH: hundreds digit)
+            long digitsAligned = wordWithoutSign << (28 - dotPos);
+            // Turns ASCII chars into corresponding number values.
+            final long digits = digitsAligned & 0x0F000F0F00L;
+            // Multiplies each digit with the appropriate power of ten.
+            // 0x000000UU00TTHH00 * (100 * 0x1000000 + 10 * 0x10000 + 1) =
+            // 0xUU00TTHH00000000 * 100 +
+            // 0x00UU00TTHH000000 * 10 +
+            // 0x000000UU00TTHH00
+            // This results in our temperature lying in bits 32 to 41 of this product.
+            final long absValue = ((digits * MAGIC_MULTIPLIER) >>> 32) & 0x3FF;
+            return (int) ((absValue ^ signed) - signed);
         }
 
         // credit: merykitty and royvanrijn
@@ -183,7 +210,7 @@ public class Blog4 {
 
             // Multiply by a magic (100 * 0x1000000 + 10 * 0x10000 + 1), to get the result
             final long absValue = ((digits * MAGIC_MULTIPLIER) >>> 32) & 0x3FF;
-            // And perform abs()
+            // And apply sign
             return (int) ((absValue + signed) ^ signed);
         }
 
