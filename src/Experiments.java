@@ -10,8 +10,8 @@ public class Experiments {
 00000020  37 2e 39 0a 44 61 6d 61  73 63 75 73 3b 32 36 2e  |7.9.Damascus;26.|
  */
 
-        long nameWord0 = 0x3b_6e_69_64_65_6e_75_44L;
-        long nameWord1 = 0x61_75_6f_42_0a_30_2e_38L;
+        long nameWord0 = 0x6f_42_0a_30_2e_38_3b_44L;
+        long nameWord1 = 0x4c_0a_37_2e_33_3b_61_75L;
         long matchBits0 = semicolonMatchBits(nameWord0);
         long matchBits1 = semicolonMatchBits(nameWord1);
         System.out.format("match bits 0 %x\n", matchBits0);
@@ -19,16 +19,19 @@ public class Experiments {
 
         int temperature;
         long lastNameWord;
+        int nameLen;
         if ((matchBits0 | matchBits1) != 0) {
             long tempWord = nameWord1;
             int nameLen0 = nameLen(matchBits0);
             int nameLen1 = nameLen(matchBits1);
             nameWord0 = maskWord(nameWord0, matchBits0);
-            nameWord1 = maskWord(nameWord1, matchBits1) & ~broadcastBit3(nameLen1);
+            // bit 3 of nameLen0 is on iff semicolon is not in nameWord0
+            long nameWord1Mask = broadcastBit3(nameLen0);
+            // nameWord1 must be zero if semicalon is in nameWord0
+            nameWord1 = maskWord(nameWord1, matchBits1) & nameWord1Mask;
             nameLen1 &= 0b111;
-            int nameLen = nameLen0 + nameLen1;
-            long lastWordMask = broadcastBit3(nameLen0);
-            lastNameWord = (nameWord0 & lastWordMask) | (nameWord1 & ~lastWordMask);
+            nameLen = nameLen0 + nameLen1;
+            lastNameWord = (nameWord0 & ~nameWord1Mask) | nameWord1;
             nameLen++;
             int dotPos = dotPos(tempWord);
             temperature = parseTemperature(tempWord, dotPos);

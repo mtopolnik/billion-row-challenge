@@ -107,24 +107,25 @@ public class Blog5 {
                 long nameStartOffset = cursor;
                 long nameWord0 = getLong(nameStartOffset);
                 long nameWord1 = getLong(nameStartOffset + Long.BYTES);
-
                 long matchBits0 = semicolonMatchBits(nameWord0);
                 long matchBits1 = semicolonMatchBits(nameWord1);
 
                 int temperature;
                 StatsAcc acc;
-                int nameLen;
                 long hash;
+                int nameLen;
                 if ((matchBits0 | matchBits1) != 0) {
                     int nameLen0 = nameLen(matchBits0);
                     int nameLen1 = nameLen(matchBits1);
                     nameWord0 = maskWord(nameWord0, matchBits0);
-                    nameWord1 = maskWord(nameWord1, matchBits1) & ~broadcastBit3(nameLen1);
-                    nameLen1 &= 0b111;
-                    nameLen = nameLen0 + nameLen1;
-                    long lastWordMask = broadcastBit3(nameLen0);
-                    lastNameWord = (nameWord0 & lastWordMask) | (nameWord1 & ~lastWordMask);
-                    nameLen++; // we'll include the semicolon in the name
+                    // bit 3 of nameLen0 is on iff semicolon is not in nameWord0.
+                    // this broadcasts bit 3 across the whole long word.
+                    long nameWord1Mask = (long) nameLen0 << 60 >> 63;
+                    // nameWord1 must be zero if semicolon is in nameWord0
+                    nameWord1 = maskWord(nameWord1, matchBits1) & nameWord1Mask;
+                    nameLen1 &= (int) (nameWord1Mask & 0b111);
+                    nameLen = nameLen0 + nameLen1 + 1; // we'll include the semicolon in the name
+                    lastNameWord = (nameWord0 & ~nameWord1Mask) | nameWord1;
 
                     cursor += nameLen;
                     long tempWord = getLong(cursor);
@@ -159,10 +160,6 @@ public class Blog5 {
                 }
                 ensureAcc(hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord).observe(temperature);
             }
-        }
-
-        private static long broadcastBit3(long word) {
-            return word << 60 >> 63;
         }
 
         private StatsAcc findAcc2(long hash, long nameWord0, long nameWord1) {
@@ -255,6 +252,8 @@ public class Blog5 {
     }
 
     static class StatsAcc {
+        private static final long[] emptyTail = new long[0];
+
         long nameWord0;
         long nameWord1;
         long[] nameTail;
@@ -277,9 +276,11 @@ public class Blog5 {
                 nameTail = new long[nameTailLen];
                 int i = 0;
                 for (; i < nameTailLen - 1; i++) {
-                    nameTail[i] = getLong(inputBase, nameStartOffset + (i + 2) * Long.BYTES);
+                    nameTail[i] = getLong(inputBase, nameStartOffset + (i + 2L) * Long.BYTES);
                 }
                 nameTail[i] = lastNameWord;
+            } else {
+                nameTail = emptyTail;
             }
         }
 
@@ -294,13 +295,13 @@ public class Blog5 {
             if (mismatch | inputNameLen <= 2 * Long.BYTES) {
                 return !mismatch;
             }
-            int i = 0;
+            int i = 2 * Long.BYTES;
             for (; i <= inputNameLen - Long.BYTES; i += Long.BYTES) {
-                if (getLong(inputBase, inputNameStart + i + 2 * Long.BYTES) != nameTail[i / 8]) {
+                if (getLong(inputBase, inputNameStart + i) != nameTail[(i - 2 * Long.BYTES) / 8]) {
                     return false;
                 }
             }
-            return i == inputNameLen || lastInputWord == nameTail[i / 8];
+            return i == inputNameLen || lastInputWord == nameTail[(i - 2 * Long.BYTES) / 8];
         }
 
         void observe(int temperature) {
@@ -311,7 +312,9 @@ public class Blog5 {
         }
 
         String exportNameString() {
-            var buf = ByteBuffer.allocate(nameTail.length * 8).order(ByteOrder.LITTLE_ENDIAN);
+            var buf = ByteBuffer.allocate((2 + nameTail.length) * 8).order(ByteOrder.LITTLE_ENDIAN);
+            buf.putLong(nameWord0);
+            buf.putLong(nameWord1);
             for (long nameWord : nameTail) {
                 buf.putLong(nameWord);
             }
