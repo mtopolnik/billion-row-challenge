@@ -81,7 +81,8 @@ public class Blog2 {
                 var semicolonPos = findByte(cursor, ';');
                 var newlinePos = findByte(semicolonPos + 1, '\n');
                 var name = stringAt(cursor, semicolonPos);
-                var temp = Double.parseDouble(stringAt(semicolonPos + 1, newlinePos));
+//                var temp = Double.parseDouble(stringAt(semicolonPos + 1, newlinePos));
+                var temp = parseTemperature(semicolonPos);
                 var stats = statsMap.computeIfAbsent(name, k -> new StationStats(name));
                 var intTemp = (int) Math.round(10 * temp);
                 stats.sum += intTemp;
@@ -91,6 +92,26 @@ public class Blog2 {
                 cursor = newlinePos + 1;
             }
             results[myIndex] = statsMap.values().toArray(StationStats[]::new);
+        }
+
+        private int parseTemperature(long semicolonPos) {
+            long off = semicolonPos + 1;
+            int sign = 1;
+            byte b = chunk.get(JAVA_BYTE, off++);
+            if (b == '-') {
+                sign = -1;
+                b = chunk.get(JAVA_BYTE, off++);
+            }
+            int temp = b - '0';
+            b = chunk.get(JAVA_BYTE, off++);
+            if (b != '.') {
+                temp = 10 * temp + b - '0';
+                // we found two integer digits. The next char is definitely '.', skip it:
+                off++;
+            }
+            b = chunk.get(JAVA_BYTE, off);
+            temp = 10 * temp + b - '0';
+            return sign * temp;
         }
 
         private long findByte(long cursor, int b) {
