@@ -82,9 +82,9 @@ public class Blog2 {
                 var newlinePos = findByte(semicolonPos + 1, '\n');
                 var name = stringAt(cursor, semicolonPos);
 //                var temp = Double.parseDouble(stringAt(semicolonPos + 1, newlinePos));
-                var temp = parseTemperature(semicolonPos);
+//                var intTemp = (int) Math.round(10 * temp);
+                var intTemp = parseTemperature(semicolonPos);
                 var stats = statsMap.computeIfAbsent(name, k -> new StationStats(name));
-                var intTemp = (int) Math.round(10 * temp);
                 stats.sum += intTemp;
                 stats.count++;
                 stats.min = Math.min(stats.min, intTemp);
