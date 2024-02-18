@@ -79,14 +79,7 @@ public class Blog3 {
             for (var cursor = 0L; cursor < chunk.byteSize(); ) {
                 var semicolonPos = findByte(cursor, ';');
                 var newlinePos = findByte(semicolonPos + 1, '\n');
-
-                // Variant 1:
-//                var tempDouble = Double.parseDouble(stringAt(semicolonPos + 1, newlinePos));
-//                var temp = (int) Math.round(10 * tempDouble);
-
-                // Variant 2:
                 var temp = parseTemperature(semicolonPos);
-
                 var acc = findAcc(cursor, semicolonPos);
                 acc.sum += temp;
                 acc.count++;
