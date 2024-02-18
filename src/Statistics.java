@@ -1,37 +1,19 @@
 import java.io.BufferedReader;
 import java.io.FileReader;
+import java.io.IOException;
 import java.util.Arrays;
+import java.util.stream.IntStream;
 
 public class Statistics {
-    static final String MEASUREMENTS_TXT = "../1brc/measurements-500m.txt";
+    static final String MEASUREMENTS_TXT = "measurements.txt";
 
     public static void main(String[] args) throws Exception {
-        var in = new BufferedReader(new FileReader(MEASUREMENTS_TXT));
-        long shortCount = 0;
-        long longCount = 0;
-        long totalCount = 0;
-        long threshold = 32; // up to (including) this many bytes is short
-        long lineCount = 0;
-        while (true) {
-            var line = in.readLine();
-            if (line == null) {
-                break;
-            }
-            if (++lineCount % 10_000_000 == 0) {
-                System.out.printf("%,d%n", lineCount);
-            }
-            var nameLen = line.indexOf(';');
-            totalCount += nameLen;
-            shortCount += Math.min(threshold, nameLen);
-            longCount += Math.max(0, nameLen - threshold + 1);
-        }
-        System.out.printf("Short: %.2f%%, long: %.2f%%%n",
-                100.0 * shortCount / totalCount, 100.0 * longCount / totalCount);
+        branchPrediction();
     }
 
-    public static void x(String[] args) throws Exception {
+    public static void distribution() throws Exception {
         var in = new BufferedReader(new FileReader(MEASUREMENTS_TXT));
-        var sizes = new int[100];
+        var sizes = new int[25];
         var lineCount = 0;
         while (true) {
             var line = in.readLine();
@@ -41,19 +23,57 @@ public class Statistics {
             if (++lineCount % 10_000_000 == 0) {
                 System.out.printf("%,d%n", lineCount);
             }
-            var nameLen = line.indexOf(';');
-            sizes[nameLen] += 1; //nameLen;
+            var nameLen = line.indexOf(';') + 1;
+            sizes[nameLen / 4] += 1; //nameLen;
         }
         var longest = Arrays.stream(sizes).max().orElse(0);
         var scale = longest / 100;
+        var shortCount = Arrays.stream(sizes, 0, 4).sum();
+        var longCount = Arrays.stream(sizes, 4, sizes.length).sum();
+        var totalCount = Arrays.stream(sizes).sum();
+        System.out.printf("Short: %.2f%%, long: %.2f%%%n",
+                100.0 * shortCount / totalCount, 100.0 * longCount / totalCount);
         for (int i = 0; i < sizes.length; i++) {
-            System.out.printf("%2d -> %,d%n", i, sizes[i]);
-//            System.out.printf("%2d -> %s%n", i * 4, "X".repeat(sizes[i] / scale));
+//            System.out.printf("%2d -> %,d%n", 4 * i, sizes[i]);
+            System.out.printf("%2d -> %s%n", i * 4, "X".repeat(sizes[i] / scale));
         }
+    }
+    public static void branchPrediction() throws Exception {
+        var in = new BufferedReader(new FileReader(MEASUREMENTS_TXT));
+        var hitCount = 0;
+        var missCount = 0;
+        var lineCount = 0;
+        var saturatingCounter = 0;
+        while (true) {
+            var line = in.readLine();
+            if (line == null) {
+                break;
+            }
+            if (++lineCount % 10_000_000 == 0) {
+                System.out.printf("%,d%n", lineCount);
+            }
+            var nameLen = line.indexOf(';') + 1;
+            var branchTaken = nameLen > 16;
+            var prediction = saturatingCounter >= 2;
+            var predictionCorrect = branchTaken == prediction;
+            if (predictionCorrect) {
+                hitCount++;
+            } else {
+                missCount++;
+            }
+            if (branchTaken) {
+                saturatingCounter = Math.min(3, saturatingCounter + 1);
+            } else {
+                saturatingCounter = Math.max(0, saturatingCounter - 1);
+            }
+        }
+        System.out.println(hitCount + missCount == lineCount);
+        System.out.printf("Hits: %,d (%.1f%%), misses: %,d (%.1f%%).\n",
+                hitCount, 100.0 * hitCount / lineCount, missCount, 100.0 * missCount / lineCount);
     }
 }
 
-// Baseline:
+// Byte distributoion in Official dataset:
 //
 // 0 ->
 // 4 -> XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -66,7 +86,7 @@ public class Statistics {
 //32 ->
 //36 ->
 
-// New:
+// Byte distribution in 10k dataset:
 //
 // 0 -> XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 // 4 -> XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
