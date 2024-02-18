@@ -131,10 +131,6 @@ public class Blog3 {
             throw new RuntimeException(((char) b) + " not found");
         }
 
-        private String stringAt(long start, long limit) {
-            return new String(chunk.asSlice(start, limit - start).toArray(JAVA_BYTE), StandardCharsets.UTF_8);
-        }
-
         private int parseTemperature(long semicolonPos) {
             long off = semicolonPos + 1;
             int sign = 1;
