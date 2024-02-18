@@ -13,12 +13,18 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.lang.ProcessBuilder.Redirect.PIPE;
 import static java.lang.foreign.ValueLayout.JAVA_BYTE;
 import static java.util.Arrays.asList;
 
 public class Blog6 {
+    static final int CHUNK_SIZE = 2 * 1024 * 1024;
+    static int chunkCount;
+    static StationStats[][] results;
+    static long baseAddress;
+    static final AtomicInteger chunkSelector = new AtomicInteger();
     private static final Unsafe UNSAFE = unsafe();
 
     private static Unsafe unsafe() {
@@ -30,6 +36,14 @@ public class Blog6 {
         catch (NoSuchFieldException | IllegalAccessException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    static long getLong(long address) {
+        return UNSAFE.getLong(address);
+    }
+
+    static byte getByte(long address) {
+        return UNSAFE.getByte(address);
     }
 
     public static void main(String[] args) throws Exception {
@@ -56,20 +70,15 @@ public class Blog6 {
     private static void calculate() throws Exception {
         final File file = new File("measurements.txt");
         final long length = file.length();
-        final int chunkCount = Runtime.getRuntime().availableProcessors();
-        final var results = new StationStats[chunkCount][];
-        final var chunkStartOffsets = new long[chunkCount];
+        chunkCount = (int) ((length / CHUNK_SIZE - 1) + 1);
+        var threadCount = Runtime.getRuntime().availableProcessors();
+        results = new StationStats[threadCount][];
         try (var raf = new RandomAccessFile(file, "r")) {
-            for (int i = 1; i < chunkStartOffsets.length; i++) {
-                chunkStartOffsets[i] = length * i / chunkStartOffsets.length;
-            }
             final var mappedFile = raf.getChannel().map(MapMode.READ_ONLY, 0, length, Arena.global());
-            var threads = new Thread[chunkCount];
-            for (int i = 0; i < chunkCount; i++) {
-                final long chunkStart = chunkStartOffsets[i];
-                final long chunkLimit = (i + 1 < chunkCount) ? chunkStartOffsets[i + 1] : length;
-                threads[i] = new Thread(new ChunkProcessor(
-                        mappedFile.asSlice(chunkStart, chunkLimit - chunkStart), results, i));
+            baseAddress = mappedFile.address();
+            var threads = new Thread[threadCount];
+            for (int i = 0; i < threadCount; i++) {
+                threads[i] = new Thread(new ChunkProcessor(i));
             }
             for (var thread : threads) {
                 thread.start();
@@ -95,34 +104,40 @@ public class Blog6 {
 
     private static class ChunkProcessor implements Runnable {
         private static final int HASHTABLE_SIZE = 4096;
-        private long inputBase;
-        private long inputSize;
-        private final StationStats[][] results;
         private final int myIndex;
         private final StatsAcc[] hashtable = new StatsAcc[HASHTABLE_SIZE];
 
-        ChunkProcessor(MemorySegment chunk, StationStats[][] results, int myIndex) {
-            this.inputBase = chunk.address();
-            this.inputSize = chunk.byteSize();
-            this.results = results;
+        ChunkProcessor(int myIndex) {
             this.myIndex = myIndex;
         }
 
         @Override public void run() {
-            while (UNSAFE.getByte(inputBase) != '\n') {
-                inputBase++;
-                inputSize--;
+            while (true) {
+                var selectedChunk = chunkSelector.getAndIncrement();
+                if (selectedChunk >= chunkCount) {
+                    break;
+                }
+                var chunkBase = baseAddress + (long) selectedChunk * CHUNK_SIZE;
+                var chunkLimit = baseAddress + (long) (selectedChunk + 1) * CHUNK_SIZE;
+                if (selectedChunk != 0 && getByte(chunkBase - 1) != '\n') {
+                    while (getByte(chunkBase) != '\n') {
+                        chunkBase++;
+                    }
+                    chunkBase++;
+                }
+                processChunk(chunkBase, chunkLimit);
             }
-            inputBase++;
-            inputSize--;
-            processChunk();
-            results[myIndex] = Arrays.stream(hashtable).filter(Objects::nonNull).map(StationStats::new).toArray(StationStats[]::new);
+            results[myIndex] = Arrays
+                    .stream(hashtable)
+                    .filter(Objects::nonNull)
+                    .map(StationStats::new)
+                    .toArray(StationStats[]::new);
         }
 
-        private void processChunk() {
-            long cursor = 0;
+        private void processChunk(long chunkBase, long chunkLimit) {
+            long cursor = chunkBase;
             long lastNameWord;
-            while (cursor < inputSize) {
+            while (cursor < chunkLimit) {
                 long nameStartOffset = cursor;
                 long nameWord0 = getLong(nameStartOffset);
                 long nameWord1 = getLong(nameStartOffset + Long.BYTES);
@@ -187,19 +202,19 @@ public class Blog6 {
             return null;
         }
 
-        private StatsAcc ensureAcc(long hash, long nameStartOffset, int nameLen,
-                                   long nameWord0, long nameWord1, long lastNameWord
+        private StatsAcc ensureAcc(
+                long hash, long nameStartOffset, int nameLen, long nameWord0, long nameWord1, long lastNameWord
         ) {
             int initialPos = (int) hash & (HASHTABLE_SIZE - 1);
             int slotPos = initialPos;
             while (true) {
                 var acc = hashtable[slotPos];
                 if (acc == null) {
-                    acc = new StatsAcc(inputBase, hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord);
+                    acc = new StatsAcc(hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord);
                     hashtable[slotPos] = acc;
                     return acc;
                 }
-                if (acc.hash == hash && acc.nameEquals(inputBase, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)) {
+                if (acc.hash == hash && acc.nameEquals(nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)) {
                     return acc;
                 }
                 slotPos = (slotPos + 1) & (HASHTABLE_SIZE - 1);
@@ -207,10 +222,6 @@ public class Blog6 {
                     throw new RuntimeException(String.format("hash %x, acc.hash %x", hash, acc.hash));
                 }
             }
-        }
-
-        private long getLong(long offset) {
-            return UNSAFE.getLong(inputBase + offset);
         }
 
         private static final long BROADCAST_SEMICOLON = 0x3B3B3B3B3B3B3B3BL;
@@ -278,9 +289,7 @@ public class Blog6 {
         int min;
         int max;
 
-        public StatsAcc(long inputBase, long hash, long nameStartOffset, int nameLen,
-                        long nameWord0, long nameWord1, long lastNameWord
-        ) {
+        public StatsAcc(long hash, long nameStartOffset, int nameLen, long nameWord0, long nameWord1, long lastNameWord) {
             this.hash = hash;
             this.nameLen = nameLen;
             this.nameWord0 = nameWord0;
@@ -290,7 +299,7 @@ public class Blog6 {
                 nameTail = new long[nameTailLen];
                 int i = 0;
                 for (; i < nameTailLen - 1; i++) {
-                    nameTail[i] = getLong(inputBase, nameStartOffset + (i + 2L) * Long.BYTES);
+                    nameTail[i] = getLong(nameStartOffset + (i + 2L) * Long.BYTES);
                 }
                 nameTail[i] = lastNameWord;
             } else {
@@ -304,7 +313,9 @@ public class Blog6 {
 
         private static final int NAMETAIL_OFFSET = 2 * Long.BYTES;
 
-        boolean nameEquals(long inputBase, long inputNameStart, long inputNameLen, long inputWord0, long inputWord1, long lastInputWord) {
+        boolean nameEquals(
+                long inputNameStart, long inputNameLen, long inputWord0, long inputWord1, long lastInputWord
+        ) {
             boolean mismatch0 = inputWord0 != nameWord0;
             boolean mismatch1 = inputWord1 != nameWord1;
             boolean mismatch = mismatch0 | mismatch1;
@@ -313,7 +324,7 @@ public class Blog6 {
             }
             int i = NAMETAIL_OFFSET;
             for (; i <= inputNameLen - Long.BYTES; i += Long.BYTES) {
-                if (getLong(inputBase, inputNameStart + i) != nameTail[(i - NAMETAIL_OFFSET) / 8]) {
+                if (getLong(inputNameStart + i) != nameTail[(i - NAMETAIL_OFFSET) / 8]) {
                     return false;
                 }
             }
@@ -338,10 +349,6 @@ public class Blog6 {
             final var bytes = new byte[nameLen - 1];
             buf.get(bytes);
             return new String(bytes, StandardCharsets.UTF_8);
-        }
-
-        private static long getLong(long base, long offset) {
-            return UNSAFE.getLong(base + offset);
         }
     }
 
