@@ -8,7 +8,8 @@ public class Statistics {
     static final String MEASUREMENTS_TXT = "measurements.txt";
 
     public static void main(String[] args) throws Exception {
-        branchPrediction();
+        distribution();
+//        branchPrediction();
     }
 
     public static void distribution() throws Exception {
@@ -23,25 +24,31 @@ public class Statistics {
             if (++lineCount % 10_000_000 == 0) {
                 System.out.printf("%,d%n", lineCount);
             }
-            var nameLen = line.indexOf(';') + 1;
-            sizes[nameLen / 4] += 1; //nameLen;
+            // actual nameLen in 1BRC code includes the semicolon, this is deliberately one less,
+            // so we get buckets that correspond to the condition nameLen > 8 and nameLen > 16
+            var nameLen = line.indexOf(';');
+            // use "+= nameLen" here to get byte distribution instead: for a randomly chosen name byte
+            // in the input, how likely is it to find itself in a name of length n?
+            sizes[nameLen / 4] += 1;
         }
         var longest = Arrays.stream(sizes).max().orElse(0);
         var scale = longest / 100;
-        var shortCount = Arrays.stream(sizes, 0, 4).sum();
-        var longCount = Arrays.stream(sizes, 4, sizes.length).sum();
+        var shortCount = Arrays.stream(sizes, 0, 2).sum();
+        var longCount = Arrays.stream(sizes, 2, sizes.length).sum();
         var totalCount = Arrays.stream(sizes).sum();
         System.out.printf("Short: %.2f%%, long: %.2f%%%n",
                 100.0 * shortCount / totalCount, 100.0 * longCount / totalCount);
         for (int i = 0; i < sizes.length; i++) {
 //            System.out.printf("%2d -> %,d%n", 4 * i, sizes[i]);
-            System.out.printf("%2d -> %s%n", i * 4, "X".repeat(sizes[i] / scale));
+            System.out.printf("%2d..%2d -> %s%n", i * 4 + 1, (i + 1) * 4, "X".repeat(sizes[i] / scale));
         }
     }
     public static void branchPrediction() throws Exception {
         var in = new BufferedReader(new FileReader(MEASUREMENTS_TXT));
         var hitCount = 0;
         var missCount = 0;
+        var takenCount = 0;
+        var notTakenCount = 0;
         var lineCount = 0;
         var saturatingCounter = 0;
         while (true) {
@@ -53,8 +60,14 @@ public class Statistics {
                 System.out.printf("%,d%n", lineCount);
             }
             var nameLen = line.indexOf(';') + 1;
-            var branchTaken = nameLen > 16;
+            var branchTaken = nameLen > 8;
+            if (branchTaken) {
+                takenCount++;
+            } else {
+                notTakenCount++;
+            }
             var prediction = saturatingCounter >= 2;
+//            System.out.printf("nameLen %2d, %5s, %5s\n", nameLen, branchTaken, prediction == branchTaken);
             var predictionCorrect = branchTaken == prediction;
             if (predictionCorrect) {
                 hitCount++;
@@ -68,7 +81,8 @@ public class Statistics {
             }
         }
         System.out.println(hitCount + missCount == lineCount);
-        System.out.printf("Hits: %,d (%.1f%%), misses: %,d (%.1f%%).\n",
+        System.out.printf("Taken: %,d (%.1f%%), not taken: %,d (%.1f%%), hits: %,d (%.1f%%), misses: %,d (%.1f%%).\n",
+                takenCount, 100.0 * takenCount / lineCount, notTakenCount, 100.0 * notTakenCount / lineCount,
                 hitCount, 100.0 * hitCount / lineCount, missCount, 100.0 * missCount / lineCount);
     }
 }
