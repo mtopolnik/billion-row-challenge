@@ -183,10 +183,8 @@ public class Blog5 {
                     hashtable[slotPos] = acc;
                     return acc;
                 }
-                if (acc.hash == hash) {
-                    if (acc.nameEquals(inputBase, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)) {
-                        return acc;
-                    }
+                if (acc.hash == hash && acc.nameEquals(inputBase, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)) {
+                    return acc;
                 }
                 slotPos = (slotPos + 1) & (HASHTABLE_SIZE - 1);
                 if (slotPos == initialPos) {
@@ -288,20 +286,22 @@ public class Blog5 {
             return this.nameWord0 == nameWord0 && this.nameWord1 == nameWord1;
         }
 
+        private static final int NAMETAIL_OFFSET = 2 * Long.BYTES;
+
         boolean nameEquals(long inputBase, long inputNameStart, long inputNameLen, long inputWord0, long inputWord1, long lastInputWord) {
             boolean mismatch0 = inputWord0 != nameWord0;
             boolean mismatch1 = inputWord1 != nameWord1;
             boolean mismatch = mismatch0 | mismatch1;
-            if (mismatch | inputNameLen <= 2 * Long.BYTES) {
+            if (mismatch | inputNameLen <= NAMETAIL_OFFSET) {
                 return !mismatch;
             }
-            int i = 2 * Long.BYTES;
+            int i = NAMETAIL_OFFSET;
             for (; i <= inputNameLen - Long.BYTES; i += Long.BYTES) {
-                if (getLong(inputBase, inputNameStart + i) != nameTail[(i - 2 * Long.BYTES) / 8]) {
+                if (getLong(inputBase, inputNameStart + i) != nameTail[(i - NAMETAIL_OFFSET) / 8]) {
                     return false;
                 }
             }
-            return i == inputNameLen || lastInputWord == nameTail[(i - 2 * Long.BYTES) / 8];
+            return i == inputNameLen || lastInputWord == nameTail[(i - NAMETAIL_OFFSET) / 8];
         }
 
         void observe(int temperature) {
