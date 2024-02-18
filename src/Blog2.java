@@ -81,9 +81,13 @@ public class Blog2 {
                 var semicolonPos = findByte(cursor, ';');
                 var newlinePos = findByte(semicolonPos + 1, '\n');
                 var name = stringAt(cursor, semicolonPos);
+                // Variant 1:
 //                var temp = Double.parseDouble(stringAt(semicolonPos + 1, newlinePos));
 //                var intTemp = (int) Math.round(10 * temp);
+
+                // Variant 2:
                 var intTemp = parseTemperature(semicolonPos);
+
                 var stats = statsMap.computeIfAbsent(name, k -> new StationStats(name));
                 stats.sum += intTemp;
                 stats.count++;
