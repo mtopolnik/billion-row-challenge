@@ -61,12 +61,7 @@ public class Blog6 {
         final var chunkStartOffsets = new long[chunkCount];
         try (var raf = new RandomAccessFile(file, "r")) {
             for (int i = 1; i < chunkStartOffsets.length; i++) {
-                var start = length * i / chunkStartOffsets.length;
-                raf.seek(start);
-                while (raf.read() != (byte) '\n') {
-                }
-                start = raf.getFilePointer();
-                chunkStartOffsets[i] = start;
+                chunkStartOffsets[i] = length * i / chunkStartOffsets.length;
             }
             final var mappedFile = raf.getChannel().map(MapMode.READ_ONLY, 0, length, Arena.global());
             var threads = new Thread[chunkCount];
@@ -100,8 +95,8 @@ public class Blog6 {
 
     private static class ChunkProcessor implements Runnable {
         private static final int HASHTABLE_SIZE = 4096;
-        private final long inputBase;
-        private final long inputSize;
+        private long inputBase;
+        private long inputSize;
         private final StationStats[][] results;
         private final int myIndex;
         private final StatsAcc[] hashtable = new StatsAcc[HASHTABLE_SIZE];
@@ -114,6 +109,12 @@ public class Blog6 {
         }
 
         @Override public void run() {
+            while (UNSAFE.getByte(inputBase) != '\n') {
+                inputBase++;
+                inputSize--;
+            }
+            inputBase++;
+            inputSize--;
             processChunk();
             results[myIndex] = Arrays.stream(hashtable).filter(Objects::nonNull).map(StationStats::new).toArray(StationStats[]::new);
         }
@@ -136,13 +137,10 @@ public class Blog6 {
                     int nameLen0 = nameLen(matchBits0);
                     int nameLen1 = nameLen(matchBits1);
                     nameWord0 = maskWord(nameWord0, matchBits0);
-                    // bit 3 of nameLen0 is on iff semicolon is not in nameWord0.
-                    // this broadcasts bit 3 across the whole long word.
                     long nameWord1Mask = (long) nameLen0 << 60 >> 63;
-                    // nameWord1 must be zero if semicolon is in nameWord0
                     nameWord1 = maskWord(nameWord1, matchBits1) & nameWord1Mask;
                     nameLen1 &= (int) (nameWord1Mask & 0b111);
-                    nameLen = nameLen0 + nameLen1 + 1; // we'll include the semicolon in the name
+                    nameLen = nameLen0 + nameLen1 + 1;
                     lastNameWord = (nameWord0 & ~nameWord1Mask) | nameWord1;
 
                     cursor += nameLen;
