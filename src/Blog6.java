@@ -119,7 +119,8 @@ public class Blog6 {
                 }
                 var chunkBase = baseAddress + (long) selectedChunk * CHUNK_SIZE;
                 var chunkLimit = baseAddress + (long) (selectedChunk + 1) * CHUNK_SIZE;
-                if (selectedChunk != 0 && getByte(chunkBase - 1) != '\n') {
+                if (selectedChunk > 0) {
+                    chunkBase--;
                     while (getByte(chunkBase) != '\n') {
                         chunkBase++;
                     }
