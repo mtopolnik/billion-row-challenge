@@ -181,16 +181,20 @@ public class Blog4 {
             final long removeSignMask = ~(signed & 0xFF);
             // Zeroes out the sign character in the word
             long wordWithoutSign = word & removeSignMask;
-            // Shifts so that the digits are at fixed positions:
+            // Shifts so that the digits come to fixed positions:
             // 0xUU00TTHH00 (UU: units digit, TT: tens digit, HH: hundreds digit)
             long digitsAligned = wordWithoutSign << (28 - dotPos);
-            // Turns ASCII chars into corresponding number values.
+            // Turns ASCII chars into corresponding number values. The ASCII code
+            // of a digit is 0x3N, where N is the digit. Therefore, the mask 0x0F
+            // passes through just the numeric value of the digit.
             final long digits = digitsAligned & 0x0F000F0F00L;
             // Multiplies each digit with the appropriate power of ten.
-            // 0x000000UU00TTHH00 * (100 * 0x1000000 + 10 * 0x10000 + 1) =
-            // 0xUU00TTHH00000000 * 100 +
-            // 0x00UU00TTHH000000 * 10 +
-            // 0x000000UU00TTHH00
+            // Representing 0 as . for readability,
+            // 0x.......U...T.H.. * (100 * 0x1000000 + 10 * 0x10000 + 1) =
+            // 0x.U...T.H........ * 100 +
+            // 0x...U...T.H...... * 10 +
+            // 0x.......U...T.H..
+            //          ^--- H, T, and U are lined up here.
             // This results in our temperature lying in bits 32 to 41 of this product.
             final long absValue = ((digits * MAGIC_MULTIPLIER) >>> 32) & 0x3FF;
             return (int) ((absValue ^ signed) - signed);
