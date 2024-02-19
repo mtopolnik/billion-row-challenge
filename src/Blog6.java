@@ -21,10 +21,11 @@ import static java.util.Arrays.asList;
 
 public class Blog6 {
     static final int CHUNK_SIZE = 2 * 1024 * 1024;
-    static int chunkCount;
+    static final int CHUNK_TRIPLE_SIZE = 3 * CHUNK_SIZE;
+    static int chunkTripleCount;
     static StationStats[][] results;
     static long baseAddress;
-    static final AtomicInteger chunkSelector = new AtomicInteger();
+    static final AtomicInteger chunkTripleSelector = new AtomicInteger();
     private static final Unsafe UNSAFE = unsafe();
 
     private static Unsafe unsafe() {
@@ -70,7 +71,7 @@ public class Blog6 {
     private static void calculate() throws Exception {
         final File file = new File("measurements.txt");
         final long length = file.length();
-        chunkCount = (int) ((length / CHUNK_SIZE - 1) + 1);
+        chunkTripleCount = (int) ((length / CHUNK_TRIPLE_SIZE - 1) + 1);
         var threadCount = Runtime.getRuntime().availableProcessors();
         results = new StationStats[threadCount][];
         try (var raf = new RandomAccessFile(file, "r")) {
@@ -78,7 +79,7 @@ public class Blog6 {
             baseAddress = mappedFile.address();
             var threads = new Thread[threadCount];
             for (int i = 0; i < threadCount; i++) {
-                threads[i] = new Thread(new ChunkProcessor(i));
+                threads[i] = new Thread(new ChunkTripleProcessor(i));
             }
             for (var thread : threads) {
                 thread.start();
@@ -102,30 +103,34 @@ public class Blog6 {
         System.out.println(totalsMap);
     }
 
-    private static class ChunkProcessor implements Runnable {
-        private static final int HASHTABLE_SIZE = 4096;
+    private static class ChunkTripleProcessor implements Runnable {
+        private static final int HASHTABLE_SIZE_LOG2 = 12;
+        private static final int HASHTABLE_SIZE = 1 << HASHTABLE_SIZE_LOG2;
         private final int myIndex;
         private final StatsAcc[] hashtable = new StatsAcc[HASHTABLE_SIZE];
 
-        ChunkProcessor(int myIndex) {
+        ChunkTripleProcessor(int myIndex) {
             this.myIndex = myIndex;
         }
 
         @Override public void run() {
             while (true) {
-                var selectedChunk = chunkSelector.getAndIncrement();
-                if (selectedChunk >= chunkCount) {
+                var selectedChunkTriple = chunkTripleSelector.getAndIncrement();
+                if (selectedChunkTriple >= chunkTripleCount) {
                     break;
                 }
-                var chunkBase = baseAddress + (long) selectedChunk * CHUNK_SIZE;
-                var chunkLimit = baseAddress + (long) (selectedChunk + 1) * CHUNK_SIZE;
-                if (selectedChunk != 0 && getByte(chunkBase - 1) != '\n') {
-                    while (getByte(chunkBase) != '\n') {
-                        chunkBase++;
-                    }
-                    chunkBase++;
+                var chunk1Base = baseAddress + (long) selectedChunkTriple * CHUNK_TRIPLE_SIZE;
+                var chunk2Base = chunk1Base + CHUNK_SIZE;
+                var chunk3Base = chunk2Base + CHUNK_SIZE;
+                var chunk3Limit = chunk3Base + CHUNK_SIZE;
+
+                if (selectedChunkTriple > 0) {
+                    chunk1Base = adjustChunkBase(chunk1Base);
                 }
-                processChunk(chunkBase, chunkLimit);
+                chunk2Base = adjustChunkBase(chunk2Base);
+                chunk3Base = adjustChunkBase(chunk3Base);
+
+                processChunkTriple(chunk1Base, chunk2Base, chunk3Base, chunk3Limit);
             }
             results[myIndex] = Arrays
                     .stream(hashtable)
@@ -134,19 +139,76 @@ public class Blog6 {
                     .toArray(StationStats[]::new);
         }
 
-        private void processChunk(long chunkBase, long chunkLimit) {
-            long cursor = chunkBase;
-            long lastNameWord;
-            while (cursor < chunkLimit) {
-                long nameStartOffset = cursor;
-                long nameWord0 = getLong(nameStartOffset);
-                long nameWord1 = getLong(nameStartOffset + Long.BYTES);
+        private static long adjustChunkBase(long provisionalChunkBase) {
+            long chunkBase = provisionalChunkBase - 1;
+            while (getByte(chunkBase) != '\n') {
+                chunkBase++;
+            }
+            return chunkBase + 1;
+        }
+
+        private void processChunkTriple(long chunk1Base, long chunk2Base, long chunk3Base, long chunk3Limit) {
+            var chunk1 = new ChunkProcessor(chunk1Base, chunk2Base);
+            var chunk2 = new ChunkProcessor(chunk2Base, chunk3Base);
+            var chunk3 = new ChunkProcessor(chunk3Base, chunk3Limit);
+
+            while (chunk1.hasData() && chunk2.hasData() && chunk3.hasData()) {
+                chunk1.loadNameWords();
+                chunk2.loadNameWords();
+                chunk3.loadNameWords();
+
+                chunk1.loadAcc();
+                chunk2.loadAcc();
+                chunk3.loadAcc();
+
+                chunk1.observeTemperature();
+                chunk2.observeTemperature();
+                chunk3.observeTemperature();
+            }
+
+            while (chunk1.hasData()) {
+                chunk1.loadNameWords();
+                chunk1.loadAcc();
+                chunk1.observeTemperature();
+            }
+
+            while (chunk2.hasData()) {
+                chunk2.loadNameWords();
+                chunk2.loadAcc();
+                chunk2.observeTemperature();
+            }
+
+            while (chunk3.hasData()) {
+                chunk3.loadNameWords();
+                chunk3.loadAcc();
+                chunk3.observeTemperature();
+            }
+        }
+
+        class ChunkProcessor {
+            private final long chunkLimit;
+            private long cursor;
+            private long nameWord0;
+            private long nameWord1;
+            private StatsAcc acc;
+
+            ChunkProcessor(long chunkBase, long chunkLimit) {
+                this.cursor = chunkBase;
+                this.chunkLimit = chunkLimit;
+            }
+
+            boolean hasData() {
+                return cursor < chunkLimit;
+            }
+            
+            void loadNameWords() {
+                nameWord0 = getLong(cursor);
+                nameWord1 = getLong(cursor + Long.BYTES);
+            }
+            
+            void loadAcc() {
                 long matchBits0 = semicolonMatchBits(nameWord0);
                 long matchBits1 = semicolonMatchBits(nameWord1);
-
-                int temperature;
-                StatsAcc acc;
-                long hash;
                 int nameLen;
                 if ((matchBits0 | matchBits1) != 0) {
                     int nameLen0 = nameLen(matchBits0);
@@ -156,123 +218,126 @@ public class Blog6 {
                     nameWord1 = maskWord(nameWord1, matchBits1) & nameWord1Mask;
                     nameLen1 &= (int) (nameWord1Mask & 0b111);
                     nameLen = nameLen0 + nameLen1 + 1;
-                    lastNameWord = (nameWord0 & ~nameWord1Mask) | nameWord1;
-
-                    cursor += nameLen;
-                    long tempWord = getLong(cursor);
-                    int dotPos = dotPos(tempWord);
-                    temperature = parseTemperature(tempWord, dotPos);
-
-                    cursor += (dotPos >> 3) + 3;
-                    hash = hash(nameWord0);
-                    acc = findAcc2(hash, nameWord0, nameWord1);
-                    if (acc != null) {
-                        acc.observe(temperature);
-                        continue;
-                    }
+                    acc = ensureAcc2(nameLen, nameWord0, nameWord1);
                 } else {
-                    hash = hash(nameWord0);
                     nameLen = 2 * Long.BYTES;
+                    long lastNameWord;
                     while (true) {
-                        lastNameWord = getLong(nameStartOffset + nameLen);
+                        lastNameWord = getLong(cursor + nameLen);
                         long matchBits = semicolonMatchBits(lastNameWord);
-                        if (matchBits != 0) {
-                            nameLen += nameLen(matchBits) + 1;
-                            lastNameWord = maskWord(lastNameWord, matchBits);
-                            cursor += nameLen;
-                            long tempWord = getLong(cursor);
-                            int dotPos = dotPos(tempWord);
-                            temperature = parseTemperature(tempWord, dotPos);
-                            cursor += (dotPos >> 3) + 3;
-                            break;
+                        if (matchBits == 0) {
+                            nameLen += Long.BYTES;
+                            continue;
                         }
-                        nameLen += Long.BYTES;
+                        nameLen += nameLen(matchBits) + 1;
+                        lastNameWord = maskWord(lastNameWord, matchBits);
+                        break;
+                    }
+                    acc = ensureAcc(cursor, nameLen, nameWord0, nameWord1, lastNameWord);
+                }
+                cursor += nameLen;
+            }
+            
+            void observeTemperature() {
+                long tempWord = getLong(cursor);
+                int dotPos = dotPos(tempWord);
+                int temperature = parseTemperature(tempWord, dotPos);
+                acc.observe(temperature);
+                cursor += (dotPos >> 3) + 3;
+            }
+
+            private StatsAcc ensureAcc2(int nameLen, long nameWord0, long nameWord1) {
+                long hash = hash(nameWord0);
+                int initialPos = (int) hash & (HASHTABLE_SIZE - 1);
+                int slotPos = (int) hash & (HASHTABLE_SIZE - 1);
+                while (true) {
+                    var acc = hashtable[slotPos];
+                    if (acc == null) {
+                        acc = new StatsAcc(hash, nameLen, nameWord0, nameWord1);
+                        hashtable[slotPos] = acc;
+                        return acc;
+                    }
+                    if (acc.hash == hash && acc.nameEquals2(nameWord0, nameWord1)) {
+                        return acc;
+                    }
+                    slotPos = (slotPos + 1) & (HASHTABLE_SIZE - 1);
+                    if (slotPos == initialPos) {
+                        throw new RuntimeException(String.format("hash %x, acc.hash %x", hash, acc.hash));
                     }
                 }
-                ensureAcc(hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord).observe(temperature);
             }
-        }
 
-        private StatsAcc findAcc2(long hash, long nameWord0, long nameWord1) {
-            int slotPos = (int) hash & (HASHTABLE_SIZE - 1);
-            var acc = hashtable[slotPos];
-            if (acc != null && acc.hash == hash && acc.nameEquals2(nameWord0, nameWord1)) {
-                return acc;
-            }
-            return null;
-        }
-
-        private StatsAcc ensureAcc(
-                long hash, long nameStartOffset, int nameLen, long nameWord0, long nameWord1, long lastNameWord
-        ) {
-            int initialPos = (int) hash & (HASHTABLE_SIZE - 1);
-            int slotPos = initialPos;
-            while (true) {
-                var acc = hashtable[slotPos];
-                if (acc == null) {
-                    acc = new StatsAcc(hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord);
-                    hashtable[slotPos] = acc;
-                    return acc;
-                }
-                if (acc.hash == hash && acc.nameEquals(nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)) {
-                    return acc;
-                }
-                slotPos = (slotPos + 1) & (HASHTABLE_SIZE - 1);
-                if (slotPos == initialPos) {
-                    throw new RuntimeException(String.format("hash %x, acc.hash %x", hash, acc.hash));
+            private StatsAcc ensureAcc(long nameStartOffset, int nameLen, long nameWord0, long nameWord1, long lastNameWord) {
+                long hash = hash(nameWord0);
+                int initialPos = (int) hash & (HASHTABLE_SIZE - 1);
+                int slotPos = initialPos;
+                while (true) {
+                    var acc = hashtable[slotPos];
+                    if (acc == null) {
+                        acc = new StatsAcc(hash, nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord);
+                        hashtable[slotPos] = acc;
+                        return acc;
+                    }
+                    if (acc.hash == hash && acc.nameEquals(nameStartOffset, nameLen, nameWord0, nameWord1, lastNameWord)) {
+                        return acc;
+                    }
+                    slotPos = (slotPos + 1) & (HASHTABLE_SIZE - 1);
+                    if (slotPos == initialPos) {
+                        throw new RuntimeException(String.format("hash %x, acc.hash %x", hash, acc.hash));
+                    }
                 }
             }
-        }
 
-        private static final long BROADCAST_SEMICOLON = 0x3B3B3B3B3B3B3B3BL;
-        private static final long BROADCAST_0x01 = 0x0101010101010101L;
-        private static final long BROADCAST_0x80 = 0x8080808080808080L;
+            private static final long BROADCAST_SEMICOLON = 0x3B3B3B3B3B3B3B3BL;
+            private static final long BROADCAST_0x01 = 0x0101010101010101L;
+            private static final long BROADCAST_0x80 = 0x8080808080808080L;
 
-        private static long semicolonMatchBits(long word) {
-            long diff = word ^ BROADCAST_SEMICOLON;
-            return (diff - BROADCAST_0x01) & (~diff & BROADCAST_0x80);
-        }
+            private static long semicolonMatchBits(long word) {
+                long diff = word ^ BROADCAST_SEMICOLON;
+                return (diff - BROADCAST_0x01) & (~diff & BROADCAST_0x80);
+            }
 
-        // credit: artsiomkorzun
-        private static long maskWord(long word, long matchBits) {
-            long mask = matchBits ^ (matchBits - 1);
-            return word & mask;
-        }
+            // credit: artsiomkorzun
+            private static long maskWord(long word, long matchBits) {
+                long mask = matchBits ^ (matchBits - 1);
+                return word & mask;
+            }
 
-        private static final long DOT_BITS = 0x10101000;
-        private static final long MAGIC_MULTIPLIER = (100 * 0x1000000 + 10 * 0x10000 + 1);
+            private static final long DOT_BITS = 0x10101000;
+            private static final long MAGIC_MULTIPLIER = (100 * 0x1000000 + 10 * 0x10000 + 1);
 
-        // credit: merykitty
-        // Bit 4 of the ascii of a digit is 1, while that of '.' is 0.
-        // This finds the decimal separator. The value can be 12, 20, 28.
-        private static int dotPos(long word) {
-            return Long.numberOfTrailingZeros(~word & DOT_BITS);
-        }
+            // credit: merykitty
+            // Bit 4 of the ascii of a digit is 1, while that of '.' is 0.
+            // This finds the decimal separator. The value can be 12, 20, 28.
+            private static int dotPos(long word) {
+                return Long.numberOfTrailingZeros(~word & DOT_BITS);
+            }
 
-        // credit: merykitty and royvanrijn
-        private static int parseTemperature(long numberBytes, int dotPos) {
-            // numberBytes contains the number: X.X, -X.X, XX.X or -XX.X
-            final long invNumberBytes = ~numberBytes;
+            // credit: merykitty and royvanrijn
+            private static int parseTemperature(long numberBytes, int dotPos) {
+                // numberBytes contains the number: X.X, -X.X, XX.X or -XX.X
+                final long invNumberBytes = ~numberBytes;
 
-            // Calculates the sign
-            final long signed = (invNumberBytes << 59) >> 63;
-            final int _28MinusDotPos = (dotPos ^ 0b11100);
-            final long minusFilter = ~(signed & 0xFF);
-            // Use the pre-calculated decimal position to adjust the values
-            final long digits = ((numberBytes & minusFilter) << _28MinusDotPos) & 0x0F000F0F00L;
+                // Calculates the sign
+                final long signed = (invNumberBytes << 59) >> 63;
+                final int _28MinusDotPos = (dotPos ^ 0b11100);
+                final long minusFilter = ~(signed & 0xFF);
+                // Use the pre-calculated decimal position to adjust the values
+                final long digits = ((numberBytes & minusFilter) << _28MinusDotPos) & 0x0F000F0F00L;
 
-            // Multiply by a magic (100 * 0x1000000 + 10 * 0x10000 + 1), to get the result
-            final long absValue = ((digits * MAGIC_MULTIPLIER) >>> 32) & 0x3FF;
-            // And apply sign
-            return (int) ((absValue + signed) ^ signed);
-        }
+                // Multiply by a magic (100 * 0x1000000 + 10 * 0x10000 + 1), to get the result
+                final long absValue = ((digits * MAGIC_MULTIPLIER) >>> 32) & 0x3FF;
+                // And apply sign
+                return (int) ((absValue + signed) ^ signed);
+            }
 
-        private static int nameLen(long separator) {
-            return (Long.numberOfTrailingZeros(separator) >>> 3);
-        }
+            private static int nameLen(long separator) {
+                return (Long.numberOfTrailingZeros(separator) >>> 3);
+            }
 
-        private static long hash(long word) {
-            return Long.rotateLeft(word * 0x51_7c_c1_b7_27_22_0a_95L, 17);
+            private static long hash(long word) {
+                return Long.rotateLeft(word * 0x51_7c_c1_b7_27_22_0a_95L, HASHTABLE_SIZE_LOG2);
+            }
         }
     }
 
@@ -289,22 +354,26 @@ public class Blog6 {
         int min;
         int max;
 
+        public StatsAcc(long hash, int nameLen, long nameWord0, long nameWord1) {
+            this.hash = hash;
+            this.nameLen = nameLen;
+            this.nameWord0 = nameWord0;
+            this.nameWord1 = nameWord1;
+            this.nameTail = emptyTail;
+        }
+        
         public StatsAcc(long hash, long nameStartOffset, int nameLen, long nameWord0, long nameWord1, long lastNameWord) {
             this.hash = hash;
             this.nameLen = nameLen;
             this.nameWord0 = nameWord0;
             this.nameWord1 = nameWord1;
             int nameTailLen = (nameLen - 1) / 8 - 1;
-            if (nameTailLen > 0) {
-                nameTail = new long[nameTailLen];
-                int i = 0;
-                for (; i < nameTailLen - 1; i++) {
-                    nameTail[i] = getLong(nameStartOffset + (i + 2L) * Long.BYTES);
-                }
-                nameTail[i] = lastNameWord;
-            } else {
-                nameTail = emptyTail;
+            nameTail = new long[nameTailLen];
+            int i = 0;
+            for (; i < nameTailLen - 1; i++) {
+                nameTail[i] = getLong(nameStartOffset + (i + 2L) * Long.BYTES);
             }
+            nameTail[i] = lastNameWord;
         }
 
         boolean nameEquals2(long nameWord0, long nameWord1) {
