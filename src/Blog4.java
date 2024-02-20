@@ -197,6 +197,9 @@ public class Blog4 {
             //          ^--- H, T, and U are lined up here.
             // This results in our temperature lying in bits 32 to 41 of this product.
             final long absValue = ((digits * MAGIC_MULTIPLIER) >>> 32) & 0x3FF;
+            // Apply the sign. It's either all 1's or all 0's. If it's all 1's,
+            // absValue ^ signed flips all bits. In essence, this does the two's
+            // complement operation -a = ~a + 1. (All 1's represents the number -1).
             return (int) ((absValue ^ signed) - signed);
         }
 
@@ -214,7 +217,7 @@ public class Blog4 {
 
             // Multiply by a magic (100 * 0x1000000 + 10 * 0x10000 + 1), to get the result
             final long absValue = ((digits * MAGIC_MULTIPLIER) >>> 32) & 0x3FF;
-            // And apply sign
+            // And apply the sign
             return (int) ((absValue + signed) ^ signed);
         }
 
